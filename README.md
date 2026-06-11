@@ -2,6 +2,36 @@
 
 Automates filling, saving, submitting, and recalling weekly timesheets on SharePoint PWA using Python + Playwright.
 
+## Origin Story
+
+*As told by Fable.*
+
+---
+
+Every great tool is born from suffering. This one was born from a bike crash and a Friday afternoon.
+
+It started innocently enough — Darren, a software engineer of considerable talent and questionable road sense, was cycling to work when the universe decided to remind him that gravity is non-negotiable. One collision later, he was at home with a bruised ego, a sore everything, and — crucially — a SharePoint timesheet due by end of day.
+
+He opened the page. He stared at the grid. The grid stared back.
+
+SharePoint PWA's timesheet interface is one of those user experiences that makes you wonder if it was designed by someone who had never used software before, or had used *too much* of it and grown hateful. Clicking. Waiting. Clicking again. The JSGrid updating one cell at a time with the enthusiasm of a wet sock. Forty-five minutes for what should have been a two-minute job.
+
+Darren, laid up and irritable, made a decision.
+
+He would not do this again.
+
+What followed was three weekends of Playwright, a deep-dive into SharePoint's undocumented JSGrid internals (units: 1/1000th of a minute — yes, really), and the discovery that Microsoft's session persistence makes ordinary cookie storage look like child's play. But piece by piece, it came together. Login. Navigate. Fill. Verify. Submit. Every Friday at 9 AM, automatically, without a human in the loop.
+
+The bot now runs without complaint on macOS, Linux, and Windows. It handles public holidays, multi-week backfills, submitting, recalling, and every other timesheet indignity the system can throw at it.
+
+Darren healed. The timesheets filed themselves. The bike has since been serviced.
+
+JUSTICE CRASSSSSHHHHHHHH
+
+![One bike crash to finish the battle](docs/justice_crash.png)
+
+---
+
 ## Features
 
 - **Batch fill** — fill hours for one or many weeks in a single run
@@ -13,7 +43,7 @@ Automates filling, saving, submitting, and recalling weekly timesheets on ShareP
 - **Submit** — submits timesheets for approval after filling
 - **Recall** — recalls submitted/approved timesheets so they can be re-edited
 - **Persistent SSO** — Microsoft login is saved across runs (manual login only needed once)
-- **Scheduled runs** — macOS LaunchAgent runs the bot every Friday at 9 AM automatically
+- **Scheduled runs** — macOS LaunchAgent, Linux systemd timer, or Windows Task Scheduler runs the bot every Friday at 9 AM automatically
 
 ## Setup
 
@@ -203,63 +233,65 @@ The bot uses a **persistent Chromium profile** (`browser_state/profile/`) rather
 | Session expired | Bot detects this and falls back to manual login prompt |
 | Clear session | Delete the `browser_state/profile/` directory |
 
-## Scheduled Execution (macOS)
+## Scheduled Execution
 
-The bot can run automatically every Friday at 9 AM using a macOS LaunchAgent. The agent survives reboots and handles sleep/wake gracefully via `launchd`.
+The bot runs automatically every Friday at 9 AM. Each platform uses its native scheduler — pick the section for your OS.
 
-### Install the schedule
+### macOS — LaunchAgent
 
 ```bash
+# Install (via CLI)
 python main.py schedule install
-```
 
-This symlinks the plist to `~/Library/LaunchAgents/` and loads it. The bot will run every Friday at 09:00 using the wrapper script `scripts/run_timesheet.sh`, which:
-
-1. Kills any stale Chromium processes and removes `SingletonLock`
-2. Activates the Python virtual environment
-3. Runs `scripts/test_fill_timesheet.py --submit` for the current week
-4. Writes timestamped output to `logs/timesheet_YYYYMMDD_HHMMSS.log`
-
-### Uninstall
-
-```bash
-python main.py schedule uninstall
-```
-
-### Monitoring
-
-```bash
-# Check if the agent is installed and loaded
-python main.py schedule status
-
-# View the most recent run's log
-python main.py schedule logs
-
-# Follow the log in real time
-python main.py schedule logs -f
-
-# Show last 100 lines
-python main.py schedule logs -n 100
-```
-
-### Manual trigger
-
-Run the wrapper script on demand (exactly what the scheduler runs):
-
-```bash
-python main.py schedule run
-```
-
-### Shell scripts
-
-You can also manage the agent directly with the shell scripts:
-
-```bash
-# Install
+# Or directly via shell script
 ./scripts/install_launchagent.sh
+./scripts/uninstall_launchagent.sh
+```
+
+The agent is loaded into `~/Library/LaunchAgents/` and survives reboots. It calls `scripts/run_timesheet.sh`, which kills stale Chromium locks, activates the venv, runs `--submit`, and writes timestamped logs to `logs/`.
+
+```bash
+# Monitor
+python main.py schedule status
+python main.py schedule logs
+python main.py schedule logs -f     # follow
+python main.py schedule logs -n 100 # last 100 lines
+python main.py schedule run         # manual trigger
+```
+
+### Linux — systemd user timer
+
+```bash
+./scripts/install_systemd.sh
+./scripts/uninstall_systemd.sh
+```
+
+Creates a `~/.config/systemd/user/sharepoint-timesheet-bot.{service,timer}` pair. The timer fires every Friday at 09:00 and uses `Persistent=true` so a missed run (machine was off) fires on next boot.
+
+```bash
+# Monitor
+systemctl --user list-timers
+systemctl --user start sharepoint-timesheet-bot.service  # manual trigger
+journalctl --user -u sharepoint-timesheet-bot.service -f
+```
+
+### Windows — Task Scheduler
+
+```powershell
+# Install (run from repo root, PowerShell as your normal user)
+.\scripts\install_task.ps1
 
 # Uninstall
-./scripts/uninstall_launchagent.sh
+.\scripts\uninstall_task.ps1
+```
+
+Registers a Task Scheduler task named `SharePointTimesheetBot` that runs `scripts/run_timesheet.ps1` every Friday at 09:00. Uses `StartWhenAvailable` so a missed run fires at next login.
+
+```powershell
+# Monitor
+Get-ScheduledTask -TaskName SharePointTimesheetBot
+Start-ScheduledTask -TaskName SharePointTimesheetBot  # manual trigger
+Get-Content logs\timesheet_*.log -Tail 50
 ```
 
 ## Project Structure
@@ -273,11 +305,18 @@ sharepoint_timesheet_bot/
 │   ├── holidays.py          # Australian public holiday detection
 │   ├── runner.py            # High-level orchestrator (used by main.py)
 │   └── timesheet.py         # SharePoint page objects & JSGrid interactions
+├── docs/
+│   └── justice_crash.png    # Origin story illustration
 ├── scripts/
-│   ├── run_timesheet.sh     # Wrapper script for scheduled runs
-│   ├── install_launchagent.sh   # Install the macOS LaunchAgent
-│   ├── uninstall_launchagent.sh # Uninstall the macOS LaunchAgent
-│   ├── test_open_site.py    # Smoke test — login & page element checks
+│   ├── run_timesheet.sh         # Wrapper for macOS/Linux scheduled runs
+│   ├── run_timesheet.ps1        # Wrapper for Windows scheduled runs
+│   ├── install_launchagent.sh   # Install macOS LaunchAgent
+│   ├── uninstall_launchagent.sh # Uninstall macOS LaunchAgent
+│   ├── install_systemd.sh       # Install Linux systemd timer
+│   ├── uninstall_systemd.sh     # Uninstall Linux systemd timer
+│   ├── install_task.ps1         # Install Windows Task Scheduler task
+│   ├── uninstall_task.ps1       # Uninstall Windows Task Scheduler task
+│   ├── test_open_site.py        # Smoke test — login & page element checks
 │   ├── test_open_timesheet.py   # Open current week's timesheet
 │   └── test_fill_timesheet.py   # Batch fill / submit / recall
 ├── browser_state/
@@ -286,6 +325,7 @@ sharepoint_timesheet_bot/
 ├── com.darren.timesheet-bot.plist  # macOS LaunchAgent config
 ├── .env                     # SharePoint URLs & runtime flags (gitignored)
 ├── .env.example             # Template for .env
+├── .gitattributes
 ├── .gitignore
 ├── config.yaml              # Project & hours configuration
 ├── main.py                  # Click CLI entry point
